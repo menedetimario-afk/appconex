@@ -94,6 +94,10 @@ class LoginRequest(BaseModel):
     def recortar_password(cls, v: str) -> str:
         return v[:72]
 
+class ProveedorNuevo(BaseModel):
+    nombre: str
+    contacto: str
+    tel: str
 # ================================================================
 # ADMINISTRACIÓN DE USUARIOS Y AUTH
 # ================================================================
@@ -149,11 +153,14 @@ def obtener_proveedores():
         conn.close()
 
 @app.post("/api/admin/proveedores/crear", dependencies=[Depends(get_api_key)])
-def crear_proveedor(nombre: str, contacto: str, tel: str):
+def crear_proveedor(p: ProveedorNuevo): # <--- Ahora recibe un objeto
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("INSERT INTO proveedores (nombre_empresa, contacto_nombre, telefono) VALUES (%s, %s, %s)", (nombre, contacto, tel))
+            cursor.execute(
+                "INSERT INTO proveedores (nombre_empresa, contacto_nombre, telefono) VALUES (%s, %s, %s)", 
+                (p.nombre, p.contacto, p.tel)
+            )
             return {"status": "success"}
     finally:
         conn.close()
