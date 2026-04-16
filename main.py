@@ -64,6 +64,7 @@ def get_db_connection():
 class EntradaInventario(BaseModel):
     codigo: str
     cantidad: int
+    precio_compra: float
 
 class ItemVenta(BaseModel):
     codigo_barras: str
@@ -204,22 +205,26 @@ def crear_proveedor(p: ProveedorNuevo): # <--- Ahora recibe un objeto
     finally:
         conn.close()
 
-@app.post("/api/admin/inventario/registrar-entrada", dependencies=[Depends(get_api_key)])
-def registrar_entrada(entrada: EntradaInventario):
+@app.post("/api/admin/inventario/registrar-entrada")
+def registrar_entrada(e: EntradaStock):
     conn = get_db_connection()
     try:
-        fecha = obtener_ahora_str()
         with conn.cursor() as cursor:
-            # 1. Actualizar existencias
-            cursor.execute("UPDATE productos SET existencias = existencias + %s WHERE codigo_barras = %s", 
-                           (entrada.cantidad, entrada.codigo))
-            # 2. Registrar en historial
-            cursor.execute("""INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) 
-                           VALUES (%s, %s, 'ENTRADA_PROVEEDOR', %s)""",
-                           (entrada.codigo, entrada.cantidad, fecha))
-            return {"status": "success", "message": "Inventario actualizado"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+            # 1. Actualizar existencias Y el precio de compra en la tabla productos
+            cursor.execute("""
+                UPDATE productos 
+                SET existencias = existencias + %s, 
+                    precio_compra = %s 
+                WHERE codigo_barras = %s
+            """, (e.cantidad, e.precio_compra, e.codigo))
+            
+            # 2. Registrar el movimiento en el historial
+            cursor.execute("""
+                INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento)
+                VALUES (%s, %s, 'ENTRADA_PROVEEDOR', NOW())
+            """, (e.codigo, e.cantidad))
+            
+            return {"status": "success"}
     finally:
         conn.close()
 
