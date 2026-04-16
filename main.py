@@ -312,6 +312,126 @@ def reporte_corte_detallado(fecha: str = Query(...)):
             }
     finally:
         conn.close()
+# Modificado para recibir el JSON de Streamlit
+@app.post("/api/admin/inventario/registrar-entrada", dependencies=[Depends(get_api_key)])
+def registrar_entrada(entrada: EntradaInventario):
+    conn = get_db_connection()
+    try:
+        fecha_final = obtener_ahora_str()
+        with conn.cursor() as cursor:
+            # 1. Actualizar Stock físico
+            cursor.execute("UPDATE productos SET existencias = existencias + %s WHERE codigo_barras = %s", (entrada.cantidad, entrada.codigo))
+
+            # 2. Insertar en Historial
+            cursor.execute("""
+                INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) 
+                VALUES (%s, %s, 'ENTRADA_PROVEEDOR', %s)
+            """, (entrada.codigo, entrada.cantidad, fecha_final))
+            return {"status": "success", "fecha": fecha_final}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+# ================================================================
+# HISTORIALES Y REPORTES
+# ================================================================
+
+@app.get("/api/admin/historial/ventas", dependencies=[Depends(get_api_key)])
+def historial_ventas(inicio: str, fin: str):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            query = """
+                SELECT v.id_venta, v.fecha_venta, p.nombre_producto, dv.cantidad, dv.precio_unitario, (dv.cantidad * dv.precio_unitario) as total
+                FROM ventas v
+                JOIN detalles_ventas dv ON v.id_venta = dv.id_venta_fk
+                JOIN productos p ON dv.codigo_barras = p.codigo_barras
+                WHERE DATE(v.fecha_venta) BETWEEN %s AND %s
+                ORDER BY v.fecha_venta DESC
+            """
+            cursor.execute(query, (inicio, fin))
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+@app.get("/api/admin/historial/compras", dependencies=[Depends(get_api_key)])
+def historial_compras(inicio: str, fin: str):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            query = """
+                SELECT h.fecha_movimiento, p.nombre_producto, h.cantidad_cambio as cantidad_ingresada, p.precio_compra, (h.cantidad_cambio * p.precio_compra) as inversion_estimada
+                FROM historial_stock h
+                JOIN productos p ON h.codigo_barras = p.codigo_barras
+                WHERE h.tipo_movimiento = 'ENTRADA_PROVEEDOR' 
+                AND DATE(h.fecha_movimiento) BETWEEN %s AND %s
+                ORDER BY h.fecha_movimiento DESC
+            """
+            cursor.execute(query, (inicio, fin))
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+@app.get("/api/admin/proveedores", dependencies=[Depends(get_api_key)])
+def obtener_proveedores():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT id_proveedor, nombre_empresa FROM proveedores ORDER BY nombre_empresa ASC")
+            return cursor.fetchall()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.get("/api/admin/dashboard/resumen", dependencies=[Depends(get_api_key)])
+def resumen_dashboard():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT COALESCE(SUM(total), 0) as t FROM ventas WHERE DATE(fecha_venta) = CURDATE()")
+            ventas_hoy = cursor.fetchone()['t']
+            
+            cursor.execute("SELECT COUNT(*) as c FROM productos WHERE existencias <= stock_minimo")
+            alertas = cursor.fetchone()['c']
+            
+            query_h = "SELECT DATE(fecha_venta) as fecha, SUM(total) as total FROM ventas GROUP BY fecha ORDER BY fecha DESC LIMIT 7"
+            cursor.execute(query_h)
+            return {
+                "ventas_hoy": float(ventas_hoy),
+                "alertas_count": alertas,
+                "historico_ventas": cursor.fetchall()
+            }
+    finally:
+        conn.close()
+
+@app.get("/api/admin/reporte/corte-detallado", dependencies=[Depends(get_api_key)])
+def reporte_corte_detallado(fecha: str = Query(...)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            query_financiero = """
+                SELECT 
+                    SUM(dv.cantidad * dv.precio_unitario) as ingresos_totales,
+                    SUM(dv.cantidad * (dv.precio_unitario - p.precio_compra)) as ganancia_neta
+                FROM detalles_ventas dv
+                JOIN productos p ON dv.codigo_barras = p.codigo_barras
+                JOIN ventas v ON dv.id_venta_fk = v.id_venta
+                WHERE DATE(v.fecha_venta) = %s
+            """
+            cursor.execute(query_financiero, (fecha,))
+            res = cursor.fetchone()
+            
+            cursor.execute("SELECT id_venta, total, fecha_venta FROM ventas WHERE DATE(fecha_venta) = %s", (fecha,))
+            return {
+                "ingresos": float(res['ingresos_totales'] or 0),
+                "ganancia": float(res['ganancia_neta'] or 0),
+                "detalles": cursor.fetchall()
+            }
+    finally:
+        conn.close()
+
 
 # ================================================================
 # MÓDULO ANDROID (SINCRONIZACIÓN RESILIENTE)
