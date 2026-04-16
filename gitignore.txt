@@ -1,0 +1,16 @@
+# Python - Archivos temporales que consumen RAM/Espacio
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# Variables de entorno (Seguridad)
+.env
+.flaskenv
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db

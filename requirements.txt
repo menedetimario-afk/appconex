@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+pymysql
+pytz
+passlib[argon2]
