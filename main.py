@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Query, Security, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security.api_key import APIKeyHeader
 from typing import List, Optional
-from pydantic import BaseModel, field_validator # Agregamos field_validator
+from pydantic import BaseModel, field_validator
 from starlette.status import HTTP_403_FORBIDDEN
 from passlib.context import CryptContext
 
@@ -16,10 +16,10 @@ app = FastAPI(title="Sistema de Gestión de Ventas e Inventario")
 # --- CONFIGURACIÓN DE ZONA HORARIA ---
 ZONA_HORARIA = pytz.timezone('America/Mexico_City')
 
-# Argon2 no tiene el límite de 72 caracteres, solucionando tu error de raíz.
+# Argon2 para seguridad de contraseñas
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
-# 2. Funciones de ayuda (Ya no necesitan el recorte [:72])
+# --- FUNCIONES DE AYUDA ---
 def obtener_hash(password: str):
     return pwd_context.hash(password)
 
@@ -46,10 +46,7 @@ async def get_api_key(header_key: str = Security(api_key_header)):
     llave_servidor = os.getenv("API_SECRET_KEY")
     if header_key == llave_servidor:
         return header_key
-    raise HTTPException(
-        status_code=HTTP_403_FORBIDDEN,
-        detail="Acceso no autorizado"
-    )
+    raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Acceso no autorizado")
 
 # --- CONEXIÓN A DB ---
 def get_db_connection():
@@ -63,7 +60,11 @@ def get_db_connection():
         autocommit=True
     )
 
-# --- MODELOS CON RECORTE AUTOMÁTICO DE SEGURIDAD ---
+# --- MODELOS ---
+class EntradaInventario(BaseModel):
+    codigo: str
+    cantidad: int
+
 class ItemVenta(BaseModel):
     codigo_barras: str
     cantidad: int
@@ -80,69 +81,47 @@ class Usuario(BaseModel):
     correo: str
     password: str
     rol: str
-
     @field_validator('password')
     @classmethod
     def recortar_password(cls, v: str) -> str:
-        # Esto corta la contraseña a 72 caracteres ANTES de que llegue a la base de datos o al hash
         return v[:72]
 
 class LoginRequest(BaseModel):
     correo: str
     password: str
-
     @field_validator('password')
     @classmethod
     def recortar_password(cls, v: str) -> str:
         return v[:72]
 
 # ================================================================
-# ADMINISTRACIÓN DE USUARIOS
+# ADMINISTRACIÓN DE USUARIOS Y AUTH
 # ================================================================
-
-@app.post("/api/usuarios/registrar", dependencies=[Depends(get_api_key)])
-def registrar_usuario(u: Usuario):
-    conn = get_db_connection()
-    try:
-        # Aquí u.password ya viene recortada por el validador del modelo
-        password_hasheada = obtener_hash(u.password)
-        
-        with conn.cursor() as cursor:
-            query = """INSERT INTO usuarios (nombre, correo, password_hash, rol, estado) 
-                       VALUES (%s, %s, %s, %s, 'Activo')"""
-            cursor.execute(query, (u.nombre, u.correo, password_hasheada, u.rol))
-            return {"status": "success", "message": f"Usuario {u.nombre} registrado"}
-    except pymysql.err.IntegrityError:
-        raise HTTPException(status_code=400, detail="El correo ya está registrado")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
 
 @app.post("/api/auth/login")
 def login(auth: LoginRequest):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            query = "SELECT nombre, rol, estado, password_hash FROM usuarios WHERE correo = %s"
-            cursor.execute(query, (auth.correo,))
+            cursor.execute("SELECT nombre, rol, estado, password_hash FROM usuarios WHERE correo = %s", (auth.correo,))
             user = cursor.fetchone()
-            
-            if not user:
-                raise HTTPException(status_code=404, detail="Usuario no encontrado")
-            
-            if not verificar_password(auth.password, user['password_hash']):
-                raise HTTPException(status_code=401, detail="Contraseña incorrecta")
-            
-            return {
-                "nombre": user['nombre'],
-                "rol": user['rol'],
-                "estado": user['estado']
-            }
+            if not user or not verificar_password(auth.password, user['password_hash']):
+                raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+            return user
     finally:
         conn.close()
 
-# ... (El resto de tus rutas de Proveedores, Inventario y Android se mantienen iguales)
+@app.post("/api/usuarios/registrar", dependencies=[Depends(get_api_key)])
+def registrar_usuario(u: Usuario):
+    conn = get_db_connection()
+    try:
+        password_hasheada = obtener_hash(u.password)
+        with conn.cursor() as cursor:
+            cursor.execute("INSERT INTO usuarios (nombre, correo, password_hash, rol, estado) VALUES (%s, %s, %s, %s, 'Activo')",
+                           (u.nombre, u.correo, password_hasheada, u.rol))
+            return {"status": "success"}
+    finally:
+        conn.close()
 
 @app.get("/api/usuarios/listar", dependencies=[Depends(get_api_key)])
 def listar_usuarios():
@@ -154,19 +133,10 @@ def listar_usuarios():
     finally:
         conn.close()
 
-@app.post("/api/usuarios/actualizar-estado", dependencies=[Depends(get_api_key)])
-def actualizar_estado(correo: str, estado: str):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("UPDATE usuarios SET estado = %s WHERE correo = %s", (estado, correo))
-            return {"status": "success"}
-    finally:
-        conn.close()
+# ================================================================
+# MÓDULO ADMINISTRATIVO (INVENTARIO Y PROVEEDORES)
+# ================================================================
 
-# ================================================================
-# MÓDULO ADMINISTRATIVO (STREAMLIT)
-# ================================================================
 @app.get("/api/admin/proveedores", dependencies=[Depends(get_api_key)])
 def obtener_proveedores():
     conn = get_db_connection()
@@ -174,8 +144,6 @@ def obtener_proveedores():
         with conn.cursor() as cursor:
             cursor.execute("SELECT id_proveedor, nombre_empresa FROM proveedores ORDER BY nombre_empresa ASC")
             return cursor.fetchall()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
 
@@ -184,157 +152,40 @@ def crear_proveedor(nombre: str, contacto: str, tel: str):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "INSERT INTO proveedores (nombre_empresa, contacto_nombre, telefono) VALUES (%s, %s, %s)"
-            cursor.execute(sql, (nombre, contacto, tel))
+            cursor.execute("INSERT INTO proveedores (nombre_empresa, contacto_nombre, telefono) VALUES (%s, %s, %s)", (nombre, contacto, tel))
             return {"status": "success"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
 
-@app.post("/api/admin/inventario/registrar-entrada", dependencies=[Depends(get_api_key)])
-def registrar_entrada(codigo: str, cantidad: int, fecha_manual: Optional[str] = Query(None)):
-    conn = get_db_connection()
-    try:
-        # Si no mandas fecha, usamos la corregida de CDMX
-        fecha_final = fecha_manual if fecha_manual else obtener_ahora_str()
-        
-        with conn.cursor() as cursor:
-            # 1. Actualizar Stock físico
-            cursor.execute("UPDATE productos SET existencias = existencias + %s WHERE codigo_barras = %s", (cantidad, codigo))
-
-            # 2. Insertar en Historial
-            cursor.execute("""
-                INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) 
-                VALUES (%s, %s, 'ENTRADA_PROVEEDOR', %s)
-            """, (codigo, cantidad, fecha_final))
-            return {"status": "success", "fecha": fecha_final}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
-
-@app.post("/api/admin/inventario/crear-producto", dependencies=[Depends(get_api_key)])
-def crear_producto(codigo: str, nombre: str, stock: int, minimo: int, id_prov: int, precio: float, precio_c: float, fecha_manual: Optional[str] = Query(None)): 
-    conn = get_db_connection()
-    try:
-        fecha_final = fecha_manual if fecha_manual else obtener_ahora_str()
-        with conn.cursor() as cursor:
-            # 1. Insertar producto
-            sql_p = """INSERT INTO productos (codigo_barras, nombre_producto, existencias, stock_minimo, id_proveedor, precio_venta, precio_compra) 
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)"""
-            cursor.execute(sql_p, (codigo, nombre, stock, minimo, id_prov, precio, precio_c))
-            
-            # 2. Historial inicial
-            sql_h = """INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) 
-                       VALUES (%s, %s, 'ENTRADA_PROVEEDOR', %s)"""
-            cursor.execute(sql_h, (codigo, stock, fecha_final))
-            return {"status": "success", "fecha": fecha_final}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
-
-@app.get("/api/admin/inventario/sugerencia-reposicion-log", dependencies=[Depends(get_api_key)])
-def sugerencia_reposicion(id_proveedor: int):
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        query = """
-            SELECT 
-                p.nombre_producto AS Producto,
-                p.existencias AS Stock_Actual,
-                p.stock_minimo AS Minimo,
-                ABS(COALESCE((
-                    SELECT SUM(h.cantidad_cambio) 
-                    FROM historial_stock h 
-                    WHERE h.codigo_barras = p.codigo_barras 
-                    AND h.tipo_movimiento = 'VENTA' 
-                    AND h.fecha_movimiento > COALESCE(
-                        (SELECT MAX(fecha_movimiento) 
-                         FROM historial_stock 
-                         WHERE codigo_barras = p.codigo_barras 
-                         AND tipo_movimiento = 'ENTRADA_PROVEEDOR'),
-                        '2000-01-01'
-                    )
-                ), 0)) AS Vendido_Desde_Ultima_Visita
-            FROM productos p
-            WHERE p.id_proveedor = %s
-        """
-        cursor.execute(query, (id_proveedor,))
-        return cursor.fetchall()
-    finally:
-        conn.close()
-
-@app.get("/api/admin/dashboard/resumen", dependencies=[Depends(get_api_key)])
-def resumen_dashboard():
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT COALESCE(SUM(total), 0) as t FROM ventas WHERE DATE(fecha_venta) = CURDATE()")
-            ventas_hoy = cursor.fetchone()['t']
-            
-            cursor.execute("SELECT COUNT(*) as c FROM productos WHERE existencias <= stock_minimo")
-            alertas = cursor.fetchone()['c']
-            
-            query_h = "SELECT DATE(fecha_venta) as fecha, SUM(total) as total FROM ventas GROUP BY fecha ORDER BY fecha DESC LIMIT 7"
-            cursor.execute(query_h)
-            return {
-                "ventas_hoy": float(ventas_hoy),
-                "alertas_count": alertas,
-                "historico_ventas": cursor.fetchall()
-            }
-    finally:
-        conn.close()
-
-@app.get("/api/admin/reporte/corte-detallado", dependencies=[Depends(get_api_key)])
-def reporte_corte_detallado(fecha: str = Query(...)):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            query_financiero = """
-                SELECT 
-                    SUM(dv.cantidad * dv.precio_unitario) as ingresos_totales,
-                    SUM(dv.cantidad * (dv.precio_unitario - p.precio_compra)) as ganancia_neta
-                FROM detalles_ventas dv
-                JOIN productos p ON dv.codigo_barras = p.codigo_barras
-                JOIN ventas v ON dv.id_venta_fk = v.id_venta
-                WHERE DATE(v.fecha_venta) = %s
-            """
-            cursor.execute(query_financiero, (fecha,))
-            res = cursor.fetchone()
-            
-            cursor.execute("SELECT id_venta, total, fecha_venta FROM ventas WHERE DATE(fecha_venta) = %s", (fecha,))
-            return {
-                "ingresos": float(res['ingresos_totales'] or 0),
-                "ganancia": float(res['ganancia_neta'] or 0),
-                "detalles": cursor.fetchall()
-            }
-    finally:
-        conn.close()
-# Modificado para recibir el JSON de Streamlit
 @app.post("/api/admin/inventario/registrar-entrada", dependencies=[Depends(get_api_key)])
 def registrar_entrada(entrada: EntradaInventario):
     conn = get_db_connection()
     try:
         fecha_final = obtener_ahora_str()
         with conn.cursor() as cursor:
-            # 1. Actualizar Stock físico
             cursor.execute("UPDATE productos SET existencias = existencias + %s WHERE codigo_barras = %s", (entrada.cantidad, entrada.codigo))
+            cursor.execute("INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) VALUES (%s, %s, 'ENTRADA_PROVEEDOR', %s)",
+                           (entrada.codigo, entrada.cantidad, fecha_final))
+            return {"status": "success"}
+    finally:
+        conn.close()
 
-            # 2. Insertar en Historial
-            cursor.execute("""
-                INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) 
-                VALUES (%s, %s, 'ENTRADA_PROVEEDOR', %s)
-            """, (entrada.codigo, entrada.cantidad, fecha_final))
-            return {"status": "success", "fecha": fecha_final}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/api/admin/inventario/crear-producto", dependencies=[Depends(get_api_key)])
+def crear_producto(codigo: str, nombre: str, stock: int, minimo: int, id_prov: int, precio: float, precio_c: float): 
+    conn = get_db_connection()
+    try:
+        fecha_final = obtener_ahora_str()
+        with conn.cursor() as cursor:
+            cursor.execute("INSERT INTO productos (codigo_barras, nombre_producto, existencias, stock_minimo, id_proveedor, precio_venta, precio_compra) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                           (codigo, nombre, stock, minimo, id_prov, precio, precio_c))
+            cursor.execute("INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) VALUES (%s, %s, 'ENTRADA_PROVEEDOR', %s)",
+                           (codigo, stock, fecha_final))
+            return {"status": "success"}
     finally:
         conn.close()
 
 # ================================================================
-# HISTORIALES Y REPORTES
+# HISTORIALES Y DASHBOARD (RECUPERADOS)
 # ================================================================
 
 @app.get("/api/admin/historial/ventas", dependencies=[Depends(get_api_key)])
@@ -373,68 +224,21 @@ def historial_compras(inicio: str, fin: str):
     finally:
         conn.close()
 
-@app.get("/api/admin/proveedores", dependencies=[Depends(get_api_key)])
-def obtener_proveedores():
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT id_proveedor, nombre_empresa FROM proveedores ORDER BY nombre_empresa ASC")
-            return cursor.fetchall()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
-
 @app.get("/api/admin/dashboard/resumen", dependencies=[Depends(get_api_key)])
 def resumen_dashboard():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute("SELECT COALESCE(SUM(total), 0) as t FROM ventas WHERE DATE(fecha_venta) = CURDATE()")
-            ventas_hoy = cursor.fetchone()['t']
-            
+            hoy = cursor.fetchone()['t']
             cursor.execute("SELECT COUNT(*) as c FROM productos WHERE existencias <= stock_minimo")
             alertas = cursor.fetchone()['c']
-            
-            query_h = "SELECT DATE(fecha_venta) as fecha, SUM(total) as total FROM ventas GROUP BY fecha ORDER BY fecha DESC LIMIT 7"
-            cursor.execute(query_h)
-            return {
-                "ventas_hoy": float(ventas_hoy),
-                "alertas_count": alertas,
-                "historico_ventas": cursor.fetchall()
-            }
+            return {"ventas_hoy": float(hoy), "alertas_count": alertas}
     finally:
         conn.close()
-
-@app.get("/api/admin/reporte/corte-detallado", dependencies=[Depends(get_api_key)])
-def reporte_corte_detallado(fecha: str = Query(...)):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            query_financiero = """
-                SELECT 
-                    SUM(dv.cantidad * dv.precio_unitario) as ingresos_totales,
-                    SUM(dv.cantidad * (dv.precio_unitario - p.precio_compra)) as ganancia_neta
-                FROM detalles_ventas dv
-                JOIN productos p ON dv.codigo_barras = p.codigo_barras
-                JOIN ventas v ON dv.id_venta_fk = v.id_venta
-                WHERE DATE(v.fecha_venta) = %s
-            """
-            cursor.execute(query_financiero, (fecha,))
-            res = cursor.fetchone()
-            
-            cursor.execute("SELECT id_venta, total, fecha_venta FROM ventas WHERE DATE(fecha_venta) = %s", (fecha,))
-            return {
-                "ingresos": float(res['ingresos_totales'] or 0),
-                "ganancia": float(res['ganancia_neta'] or 0),
-                "detalles": cursor.fetchall()
-            }
-    finally:
-        conn.close()
-
 
 # ================================================================
-# MÓDULO ANDROID (SINCRONIZACIÓN RESILIENTE)
+# MÓDULO ANDROID
 # ================================================================
 
 @app.get("/listar_productos", dependencies=[Depends(get_api_key)])
@@ -453,29 +257,15 @@ async def vender_detalle(venta: VentaCompleta):
     try:
         with conexion.cursor() as cursor:
             try:
-                # 1. AGRUPAR PRODUCTOS (Evita duplicados en una sola transacción)
-                productos_agrupados = {}
-                for p in venta.productos:
-                    if p.codigo_barras in productos_agrupados:
-                        productos_agrupados[p.codigo_barras]['cantidad'] += p.cantidad
-                    else:
-                        productos_agrupados[p.codigo_barras] = {'cantidad': p.cantidad, 'precio': p.total}
-
-                # 2. INSERTAR CABECERA (Usa la fecha que manda el ZTE)
-                sql_cabecera = "INSERT INTO ventas (total, id_android_local, fecha_venta) VALUES (%s, %s, %s)"
-                cursor.execute(sql_cabecera, (float(venta.total), int(venta.id_venta), str(venta.fecha)))
+                cursor.execute("INSERT INTO ventas (total, id_android_local, fecha_venta) VALUES (%s, %s, %s)", 
+                               (float(venta.total), int(venta.id_venta), str(venta.fecha)))
                 id_generado = conexion.insert_id()
-
-                # 3. PROCESAR PRODUCTOS
-                sql_detalle = "INSERT INTO detalles_ventas (id_venta_fk, codigo_barras, cantidad, precio_unitario) VALUES (%s, %s, %s, %s)"
-                sql_update_stock = "UPDATE productos SET existencias = existencias - %s WHERE codigo_barras = %s"
-                sql_historial = "INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) VALUES (%s, %s, 'VENTA', %s)"
-
-                for codigo, datos in productos_agrupados.items():
-                    cursor.execute(sql_detalle, (id_generado, codigo, datos['cantidad'], datos['precio']))
-                    cursor.execute(sql_update_stock, (datos['cantidad'], codigo))
-                    cursor.execute(sql_historial, (codigo, -datos['cantidad'], venta.fecha))
-
+                for p in venta.productos:
+                    cursor.execute("INSERT INTO detalles_ventas (id_venta_fk, codigo_barras, cantidad, precio_unitario) VALUES (%s, %s, %s, %s)",
+                                   (id_generado, p.codigo_barras, p.cantidad, p.total))
+                    cursor.execute("UPDATE productos SET existencias = existencias - %s WHERE codigo_barras = %s", (p.cantidad, p.codigo_barras))
+                    cursor.execute("INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) VALUES (%s, %s, 'VENTA', %s)",
+                                   (p.codigo_barras, -p.cantidad, venta.fecha))
                 conexion.commit()
                 return {"status": "ok", "id_nube": id_generado}
             except pymysql.err.IntegrityError:
@@ -488,5 +278,4 @@ async def vender_detalle(venta: VentaCompleta):
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
