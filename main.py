@@ -199,36 +199,31 @@ def reporte_corte_detallado(fecha: str = Query(...)):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # 1. Cálculo financiero (Ingresos y Ganancias)
-            query_financiero = """
+            # Cálculos financieros
+            cursor.execute("""
                 SELECT 
-                    SUM(dv.cantidad * dv.precio_unitario) as ingresos_totales,
-                    SUM(dv.cantidad * (dv.precio_unitario - p.precio_compra)) as ganancia_neta
+                    SUM(dv.cantidad * dv.precio_unitario) as ingresos,
+                    SUM(dv.cantidad * (dv.precio_unitario - p.precio_compra)) as ganancia
                 FROM detalles_ventas dv
                 JOIN productos p ON dv.codigo_barras = p.codigo_barras
                 JOIN ventas v ON dv.id_venta_fk = v.id_venta
                 WHERE DATE(v.fecha_venta) = %s
-            """
-            cursor.execute(query_financiero, (fecha,))
+            """, (fecha,))
             res = cursor.fetchone()
             
-            # 2. Listado de tickets (para la tabla)
-            # Asegúrate de seleccionar exactamente 3 columnas para que coincida con tu DataFrame
-            cursor.execute("""
-                SELECT id_venta, total, fecha_venta 
-                FROM ventas 
-                WHERE DATE(fecha_venta) = %s 
-                ORDER BY fecha_venta DESC
-            """, (fecha,))
+            # Listado de tickets
+            cursor.execute("SELECT id_venta, total, fecha_venta FROM ventas WHERE DATE(fecha_venta) = %s", (fecha,))
             detalles = cursor.fetchall()
             
+            # Formateo seguro de nulos
+            ingresos = float(res['ingresos']) if res and res['ingresos'] else 0.0
+            ganancia = float(res['ganancia']) if res and res['ganancia'] else 0.0
+            
             return {
-                "ingresos": float(res['ingresos_totales'] or 0),
-                "ganancia": float(res['ganancia_neta'] or 0),
+                "ingresos": ingresos,
+                "ganancia": ganancia,
                 "detalles": detalles
             }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
 # ================================================================
