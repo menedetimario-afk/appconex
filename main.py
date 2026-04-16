@@ -61,7 +61,7 @@ def get_db_connection():
     )
 
 # --- MODELOS ---
-class EntradaInventario(BaseModel):
+class EntradaStock(BaseModel):
     codigo: str
     cantidad: int
     precio_compra: float
