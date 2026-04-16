@@ -98,6 +98,15 @@ class ProveedorNuevo(BaseModel):
     nombre: str
     contacto: str
     tel: str
+
+class ProductoNuevo(BaseModel):
+    codigo: str
+    nombre: str
+    stock: int
+    minimo: int
+    id_prov: int
+    precio: float
+    precio_c: float
 # ================================================================
 # ADMINISTRACIÓN DE USUARIOS Y AUTH
 # ================================================================
@@ -185,16 +194,28 @@ def registrar_entrada(entrada: EntradaInventario):
         conn.close()
 
 @app.post("/api/admin/inventario/crear-producto", dependencies=[Depends(get_api_key)])
-def crear_producto(codigo: str, nombre: str, stock: int, minimo: int, id_prov: int, precio: float, precio_c: float): 
+def crear_producto(p: ProductoNuevo): # <--- Ahora recibe el objeto completo
     conn = get_db_connection()
     try:
         fecha_final = obtener_ahora_str()
         with conn.cursor() as cursor:
-            cursor.execute("INSERT INTO productos (codigo_barras, nombre_producto, existencias, stock_minimo, id_proveedor, precio_venta, precio_compra) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                           (codigo, nombre, stock, minimo, id_prov, precio, precio_c))
-            cursor.execute("INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) VALUES (%s, %s, 'ENTRADA_PROVEEDOR', %s)",
-                           (codigo, stock, fecha_final))
+            # Usamos p.propiedad para acceder a los datos del JSON
+            cursor.execute("""
+                INSERT INTO productos 
+                (codigo_barras, nombre_producto, existencias, stock_minimo, id_proveedor, precio_venta, precio_compra) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (p.codigo, p.nombre, p.stock, p.minimo, p.id_prov, p.precio, p.precio_c))
+            
+            cursor.execute("""
+                INSERT INTO historial_stock 
+                (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) 
+                VALUES (%s, %s, 'ENTRADA_PROVEEDOR', %s)
+            """, (p.codigo, p.stock, fecha_final))
+            
             return {"status": "success"}
+    except Exception as e:
+        print(f"Error al crear producto: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
 
