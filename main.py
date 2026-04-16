@@ -291,6 +291,33 @@ def pedidos_sugeridos_avanzado():
             return cursor.fetchall()
     finally:
         conn.close()
+
+# ================================================================
+# Ventas
+# ================================================================
+@app.get("/api/ventas/historial-hoy")
+def historial_ventas_hoy():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Consulta que trae la venta y los nombres de los productos vendidos
+            query = """
+                SELECT 
+                    v.id_venta, 
+                    v.fecha_venta, 
+                    v.total_venta,
+                    GROUP_CONCAT(p.nombre_producto SEPARATOR ', ') as productos
+                FROM ventas v
+                JOIN detalles_ventas dv ON v.id_venta = dv.id_venta_fk
+                JOIN productos p ON dv.codigo_barras = p.codigo_barras
+                WHERE DATE(v.fecha_venta) = CURDATE()
+                GROUP BY v.id_venta
+                ORDER BY v.fecha_venta DESC
+            """
+            cursor.execute(query)
+            return cursor.fetchall()
+    finally:
+        conn.close()
 # ================================================================
 # CORTE DE CAJA
 # ================================================================
