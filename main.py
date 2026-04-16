@@ -337,6 +337,49 @@ async def vender_detalle(venta: VentaCompleta):
     finally:
         conexion.close()
 
+# ================================================================
+# MÓDULO DE VENTAS (NUEVO)
+# ================================================================
+
+@app.post("/api/ventas/registrar", dependencies=[Depends(get_api_key)])
+def registrar_venta_completa(venta: VentaCompleta):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 1. Insertar la cabecera de la venta
+            fecha_actual = obtener_ahora_str()
+            cursor.execute(
+                "INSERT INTO ventas (total, fecha_venta) VALUES (%s, %s)",
+                (venta.total, fecha_actual)
+            )
+            id_venta = conn.insert_id()
+
+            # 2. Insertar cada producto y descontar inventario
+            for item in venta.productos:
+                # Registrar detalle
+                cursor.execute(
+                    "INSERT INTO detalles_ventas (id_venta_fk, codigo_barras, cantidad, precio_unitario) VALUES (%s, %s, %s, %s)",
+                    (id_venta, item.codigo_barras, item.cantidad, item.total)
+                )
+                # Descontar stock
+                cursor.execute(
+                    "UPDATE productos SET existencias = existencias - %s WHERE codigo_barras = %s",
+                    (item.cantidad, item.codigo_barras)
+                )
+                # Historial de movimiento
+                cursor.execute(
+                    "INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) VALUES (%s, %s, 'VENTA', %s)",
+                    (item.codigo_barras, -item.cantidad, fecha_actual)
+                )
+            
+            conn.commit()
+            return {"status": "success", "id_venta": id_venta}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
