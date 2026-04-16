@@ -142,6 +142,7 @@ def obtener_proveedores():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            # Aseguramos que exista la columna nombre_empresa
             cursor.execute("SELECT id_proveedor, nombre_empresa FROM proveedores ORDER BY nombre_empresa ASC")
             return cursor.fetchall()
     finally:
@@ -161,12 +162,18 @@ def crear_proveedor(nombre: str, contacto: str, tel: str):
 def registrar_entrada(entrada: EntradaInventario):
     conn = get_db_connection()
     try:
-        fecha_final = obtener_ahora_str()
+        fecha = obtener_ahora_str()
         with conn.cursor() as cursor:
-            cursor.execute("UPDATE productos SET existencias = existencias + %s WHERE codigo_barras = %s", (entrada.cantidad, entrada.codigo))
-            cursor.execute("INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) VALUES (%s, %s, 'ENTRADA_PROVEEDOR', %s)",
-                           (entrada.codigo, entrada.cantidad, fecha_final))
-            return {"status": "success"}
+            # 1. Actualizar existencias
+            cursor.execute("UPDATE productos SET existencias = existencias + %s WHERE codigo_barras = %s", 
+                           (entrada.cantidad, entrada.codigo))
+            # 2. Registrar en historial
+            cursor.execute("""INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) 
+                           VALUES (%s, %s, 'ENTRADA_PROVEEDOR', %s)""",
+                           (entrada.codigo, entrada.cantidad, fecha))
+            return {"status": "success", "message": "Inventario actualizado"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
 
@@ -184,6 +191,46 @@ def crear_producto(codigo: str, nombre: str, stock: int, minimo: int, id_prov: i
     finally:
         conn.close()
 
+# ================================================================
+# CORTE DE CAJA
+# ================================================================
+@app.get("/api/admin/reporte/corte-detallado", dependencies=[Depends(get_api_key)])
+def reporte_corte_detallado(fecha: str = Query(...)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 1. Cálculo financiero (Ingresos y Ganancias)
+            query_financiero = """
+                SELECT 
+                    SUM(dv.cantidad * dv.precio_unitario) as ingresos_totales,
+                    SUM(dv.cantidad * (dv.precio_unitario - p.precio_compra)) as ganancia_neta
+                FROM detalles_ventas dv
+                JOIN productos p ON dv.codigo_barras = p.codigo_barras
+                JOIN ventas v ON dv.id_venta_fk = v.id_venta
+                WHERE DATE(v.fecha_venta) = %s
+            """
+            cursor.execute(query_financiero, (fecha,))
+            res = cursor.fetchone()
+            
+            # 2. Listado de tickets (para la tabla)
+            # Asegúrate de seleccionar exactamente 3 columnas para que coincida con tu DataFrame
+            cursor.execute("""
+                SELECT id_venta, total, fecha_venta 
+                FROM ventas 
+                WHERE DATE(fecha_venta) = %s 
+                ORDER BY fecha_venta DESC
+            """, (fecha,))
+            detalles = cursor.fetchall()
+            
+            return {
+                "ingresos": float(res['ingresos_totales'] or 0),
+                "ganancia": float(res['ganancia_neta'] or 0),
+                "detalles": detalles
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 # ================================================================
 # HISTORIALES Y DASHBOARD (RECUPERADOS)
 # ================================================================
@@ -237,8 +284,26 @@ def resumen_dashboard():
     finally:
         conn.close()
 
+@app.get("/api/admin/dashboard/grafico-ventas", dependencies=[Depends(get_api_key)])
+def datos_grafico_ventas():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Obtenemos las ventas sumadas por día de la última semana
+            query = """
+                SELECT DATE(fecha_venta) as fecha, SUM(total) as total_dia
+                FROM ventas
+                WHERE fecha_venta >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+                GROUP BY DATE(fecha_venta)
+                ORDER BY fecha ASC
+            """
+            cursor.execute(query)
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
 # ================================================================
-# MÓDULO ANDROID
+# MÓDULO 
 # ================================================================
 
 @app.get("/listar_productos", dependencies=[Depends(get_api_key)])
@@ -246,7 +311,8 @@ def listar_productos():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT codigo_barras, nombre_producto, precio_compra, precio_venta, existencias FROM productos")
+            # Aseguramos que existan las columnas nombre_producto y precio_compra
+            cursor.execute("SELECT codigo_barras, nombre_producto, precio_compra, existencias FROM productos")
             return cursor.fetchall()
     finally:
         conn.close()
