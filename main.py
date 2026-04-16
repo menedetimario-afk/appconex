@@ -146,6 +146,25 @@ def listar_usuarios():
     finally:
         conn.close()
 
+@app.delete("/api/usuarios/eliminar/{id_usuario}", dependencies=[Depends(get_api_key)])
+def eliminar_usuario(id_usuario: int):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Primero verificamos si existe
+            cursor.execute("SELECT nombre FROM usuarios WHERE id_usuario = %s", (id_usuario,))
+            user = cursor.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="Usuario no encontrado")
+            
+            # Eliminamos
+            cursor.execute("DELETE FROM usuarios WHERE id_usuario = %s", (id_usuario,))
+            return {"status": "success", "message": f"Usuario {user['nombre']} eliminado"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
 # ================================================================
 # MÓDULO ADMINISTRATIVO (INVENTARIO Y PROVEEDORES)
 # ================================================================
