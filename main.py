@@ -156,6 +156,16 @@ def desactivar_usuario(id_usuario: int):
     finally:
         conn.close()
 
+@app.put("/api/usuarios/activar/{id_usuario}", dependencies=[Depends(get_api_key)])
+def activar_usuario(id_usuario: int):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE usuarios SET estado = 'Activo' WHERE id_usuario = %s", (id_usuario,))
+            return {"status": "success", "message": "Usuario activado correctamente"}
+    finally:
+        conn.close()
+
 @app.delete("/api/usuarios/eliminar/{id_usuario}", dependencies=[Depends(get_api_key)])
 def eliminar_usuario(id_usuario: int):
     conn = get_db_connection()
