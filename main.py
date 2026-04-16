@@ -249,6 +249,43 @@ def crear_producto(p: ProductoNuevo): # <--- Ahora recibe el objeto completo
     finally:
         conn.close()
 
+@app.get("/api/admin/inventario/sugeridos-avanzado", dependencies=[Depends(get_api_key)])
+def pedidos_sugeridos_avanzado():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Esta consulta calcula:
+            # 1. La fecha del último ingreso de stock por producto.
+            # 2. Las ventas realizadas desde esa fecha hasta hoy.
+            # 3. La sugerencia (pedir lo mismo que se vendió para mantener stock).
+            query = """
+                SELECT 
+                    p.codigo_barras, 
+                    p.nombre_producto, 
+                    p.existencias, 
+                    p.stock_minimo,
+                    prov.nombre_empresa AS proveedor,
+                    (SELECT MAX(fecha_movimiento) 
+                     FROM historial_stock 
+                     WHERE codigo_barras = p.codigo_barras 
+                     AND tipo_movimiento = 'ENTRADA_PROVEEDOR') as ultima_entrada,
+                    COALESCE(SUM(dv.cantidad), 0) as ventas_periodo
+                FROM productos p
+                JOIN proveedores prov ON p.id_proveedor = prov.id_proveedor
+                LEFT JOIN detalles_ventas dv ON p.codigo_barras = dv.codigo_barras
+                LEFT JOIN ventas v ON dv.id_venta_fk = v.id_venta
+                WHERE v.fecha_venta >= (
+                    SELECT COALESCE(MAX(fecha_movimiento), '2000-01-01')
+                    FROM historial_stock 
+                    WHERE codigo_barras = p.codigo_barras 
+                    AND tipo_movimiento = 'ENTRADA_PROVEEDOR'
+                ) OR v.fecha_venta IS NULL
+                GROUP BY p.codigo_barras
+            """
+            cursor.execute(query)
+            return cursor.fetchall()
+    finally:
+        conn.close()
 # ================================================================
 # CORTE DE CAJA
 # ================================================================
