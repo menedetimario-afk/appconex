@@ -401,13 +401,14 @@ def datos_grafico_ventas():
 # MÓDULO 
 # ================================================================
 
-@app.get("/listar_productos", dependencies=[Depends(get_api_key)])
+@app.get("/listar_productos")
 def listar_productos():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # AGREGAMOS precio_venta a la consulta
-            cursor.execute("SELECT codigo_barras, nombre_producto, precio_venta, precio_compra, existencias FROM productos")
+            # Asegúrate de incluir 'id_proveedor' en la consulta
+            query = "SELECT codigo_barras, nombre_producto, existencias, precio_venta, precio_compra, stock_minimo, id_proveedor FROM productos"
+            cursor.execute(query)
             return cursor.fetchall()
     finally:
         conn.close()
