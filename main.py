@@ -306,8 +306,8 @@ def listar_productos():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # Aseguramos que existan las columnas nombre_producto y precio_compra
-            cursor.execute("SELECT codigo_barras, nombre_producto, precio_compra, existencias FROM productos")
+            # AGREGAMOS precio_venta a la consulta
+            cursor.execute("SELECT codigo_barras, nombre_producto, precio_venta, precio_compra, existencias FROM productos")
             return cursor.fetchall()
     finally:
         conn.close()
@@ -346,27 +346,23 @@ def registrar_venta_completa(venta: VentaCompleta):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # 1. Insertar la cabecera de la venta
             fecha_actual = obtener_ahora_str()
+            # Quitamos el id_android_local si no es necesario o lo ponemos como opcional
             cursor.execute(
                 "INSERT INTO ventas (total, fecha_venta) VALUES (%s, %s)",
                 (venta.total, fecha_actual)
             )
             id_venta = conn.insert_id()
 
-            # 2. Insertar cada producto y descontar inventario
             for item in venta.productos:
-                # Registrar detalle
                 cursor.execute(
                     "INSERT INTO detalles_ventas (id_venta_fk, codigo_barras, cantidad, precio_unitario) VALUES (%s, %s, %s, %s)",
                     (id_venta, item.codigo_barras, item.cantidad, item.total)
                 )
-                # Descontar stock
                 cursor.execute(
                     "UPDATE productos SET existencias = existencias - %s WHERE codigo_barras = %s",
                     (item.cantidad, item.codigo_barras)
                 )
-                # Historial de movimiento
                 cursor.execute(
                     "INSERT INTO historial_stock (codigo_barras, cantidad_cambio, tipo_movimiento, fecha_movimiento) VALUES (%s, %s, 'VENTA', %s)",
                     (item.codigo_barras, -item.cantidad, fecha_actual)
@@ -376,6 +372,8 @@ def registrar_venta_completa(venta: VentaCompleta):
             return {"status": "success", "id_venta": id_venta}
     except Exception as e:
         conn.rollback()
+        # Esto te ayudará a ver el error real en los logs de la API
+        print(f"Error en venta: {str(e)}") 
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
