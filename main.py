@@ -305,7 +305,7 @@ def historial_ventas_hoy():
                 SELECT 
                     v.id_venta, 
                     v.fecha_venta, 
-                    v.total_venta,
+                    v.total,
                     GROUP_CONCAT(p.nombre_producto SEPARATOR ', ') as productos
                 FROM ventas v
                 JOIN detalles_ventas dv ON v.id_venta = dv.id_venta_fk
